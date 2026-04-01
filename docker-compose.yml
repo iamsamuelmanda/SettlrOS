@@ -1,0 +1,12 @@
+services:
+  db:
+    image: postgres:15
+    container_name: connexa-postgres
+    environment:
+      POSTGRES_USER: connexa
+      POSTGRES_PASSWORD: connexa
+      POSTGRES_DB: connexa
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d
