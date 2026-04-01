@@ -1,89 +1,87 @@
-import { PoolClient } from "pg";
-import { Ledger } from "./ledger";
+import { ILedger, LedgerEntry } from "./ledger";
+import { StateMachine, SettlementState } from "./stateMachine";
 
-export type SettlementState = "INITIATED" | "PENDING" | "COMPLETED" | "FAILED";
+export { SettlementState };
+
+// ── Settlement — pure domain class ───────────────────────────────────────────
+// No SQL. No PoolClient. No network.
+// All persistence happens through ILedger — injected at construction.
 
 export class Settlement {
-    private readonly reference: string;
-    private owner: string;
-    private readonly ledger: Ledger;
-    private currentState: SettlementState;
+  private readonly reference: string;
+  private owner: string;
+  private readonly ledger: ILedger;
+  private readonly stateMachine: StateMachine;
+  private currentState: SettlementState;
+  private version: number;
 
-    constructor(reference: string, owner: string, ledger: Ledger) {
-        this.reference = reference;
-        this.owner = owner;
-        this.ledger = ledger;
-        this.currentState = "INITIATED";
+  constructor(reference: string, owner: string, ledger: ILedger) {
+    this.reference = reference;
+    this.owner = owner;
+    this.ledger = ledger;
+    this.stateMachine = new StateMachine();
+    this.currentState = this.stateMachine.getInitialState();
+    this.version = 0;
+  }
+
+  // ── Public accessors ────────────────────────────────────────────────────────
+
+  getReference(): string {
+    return this.reference;
+  }
+
+  getState(): SettlementState {
+    return this.currentState;
+  }
+
+  getOwner(): string {
+    return this.owner;
+  }
+
+  getVersion(): number {
+    return this.version;
+  }
+
+  // ── Commands ────────────────────────────────────────────────────────────────
+
+  async start(): Promise<void> {
+    this.version = 1;
+
+    const entry: LedgerEntry = {
+      settlementReference: this.reference,
+      state: this.currentState,
+      sequenceNumber: this.version,
+    };
+
+    await this.ledger.append(entry);
+  }
+
+  async transitionTo(
+    expectedState: SettlementState,
+    nextState: SettlementState,
+    nextOwner: string
+  ): Promise<void> {
+    if (this.currentState !== expectedState) {
+      throw new Error(
+        `State mismatch: expected ${expectedState}, current is ${this.currentState}`
+      );
     }
 
-    getState(): SettlementState {
-        return this.currentState;
-    }
+    // Validates against transition map — throws if illegal
+    this.stateMachine.validateTransition(this.currentState, nextState);
 
-    async start(): Promise<void> {
-        await this.ledger.withTransaction(async (client) => {
-            // Insert settlement
-            await client.query(
-                `
-                INSERT INTO settlements
-                    (reference, status, owner)
-                VALUES
-                    ($1, $2, $3)
-                ON CONFLICT(reference) DO NOTHING
-                `,
-                [this.reference, "INITIATED", this.owner]
-            );
+    this.version += 1;
 
-            // Ledger entry sequence = 1
-            await this.ledger.append(client, this.reference, "INITIATED", 1);
-        });
-    }
+    const entry: LedgerEntry = {
+      settlementReference: this.reference,
+      state: nextState,
+      sequenceNumber: this.version,
+    };
 
-    async transitionTo(
-        expectedState: SettlementState,
-        nextState: SettlementState,
-        nextOwner: string
-    ): Promise<void> {
-        await this.ledger.withTransaction(async (client) => {
-            const { rows } = await client.query(
-                `
-                SELECT status, owner, version
-                FROM settlements
-                WHERE reference = $1
-                FOR UPDATE
-                `,
-                [this.reference]
-            );
+    await this.ledger.append(entry);
 
-            if (rows.length !== 1) throw new Error("Settlement not found");
-
-            const { status, owner, version } = rows[0];
-
-            if (status !== expectedState) {
-                throw new Error(`Invalid state transition: expected ${expectedState}, got ${status}`);
-            }
-
-            // Append next ledger entry
-            const nextVersion = version + 1;
-            await this.ledger.append(client, this.reference, nextState, nextVersion);
-
-            // Atomically update settlement
-            const result = await client.query(
-                `
-                UPDATE settlements
-                SET status = $1, owner = $2, version = version + 1, updated_at = NOW()
-                WHERE reference = $3 AND owner = $4 AND version = $5
-                `,
-                [nextState, nextOwner, this.reference, owner, version]
-            );
-
-            if (result.rowCount !== 1) {
-                throw new Error("Ownership or version conflict");
-            }
-
-            // Update in-memory view only after successful commit path
-            this.currentState = nextState;
-            this.owner = nextOwner;
-        });
-    }
-            }
+    // In-memory state updated only after ledger write succeeds
+    this.currentState = nextState;
+    this.owner = nextOwner;
+  }
+}

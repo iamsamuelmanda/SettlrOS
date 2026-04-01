@@ -1,37 +1,35 @@
-export type SettlementState =
-    | "INITIATED"
-    | "PENDING"
-    | "COMPLETED"
-    | "FAILED";
+// ── State type — single source of truth across the entire domain ─────────────
 
-// Allowed transitions map
-const transitions: Record<SettlementState, SettlementState[]> = {
-    INITIATED: ["PENDING"],
-    PENDING: ["COMPLETED", "FAILED"],
-    COMPLETED: [],
-    FAILED: [],
+export type SettlementState = "INITIATED" | "PENDING" | "COMPLETED" | "FAILED";
+
+// ── Allowed transitions ───────────────────────────────────────────────────────
+
+const TRANSITIONS: Record<SettlementState, SettlementState[]> = {
+  INITIATED: ["PENDING"],
+  PENDING:   ["COMPLETED", "FAILED"],
+  COMPLETED: [],
+  FAILED:    [],
 };
 
+// ── StateMachine ──────────────────────────────────────────────────────────────
+
 export class StateMachine {
-    getInitialState(): SettlementState {
-        return "INITIATED";
-    }
+  getInitialState(): SettlementState {
+    return "INITIATED";
+  }
 
-    // Validate transitions, including replay
-    validateTransition(from: SettlementState, to: SettlementState): void {
-        const allowed = transitions[from];
-        if (!allowed.includes(to)) {
-            throw new Error(`Invalid state transition: ${from} → ${to}`);
-        }
+  validateTransition(from: SettlementState, to: SettlementState): void {
+    const allowed = TRANSITIONS[from];
+    if (!allowed.includes(to)) {
+      throw new Error(`Invalid transition: ${from} → ${to}`);
     }
+  }
 
-    // Check if a state is terminal
-    isTerminal(state: SettlementState): boolean {
-        return transitions[state].length === 0;
-    }
+  getNextStates(from: SettlementState): SettlementState[] {
+    return TRANSITIONS[from];
+  }
 
-    // [DAY1 FIX] Get next valid states
-    getNextStates(from: SettlementState): SettlementState[] {
-        return transitions[from];
-    }
+  isTerminal(state: SettlementState): boolean {
+    return TRANSITIONS[state].length === 0;
+  }
 }

@@ -1,105 +1,114 @@
-// tests/testDay1Final.ts
-import { Ledger } from "../src/domain/ledger";
+import { InMemoryLedger } from "../src/domain/ledger";
 import { Settlement, SettlementState } from "../src/domain/settlement";
 import { StateMachine } from "../src/domain/stateMachine";
 import { ReplayEngine } from "../src/domain/replayEngine";
 
-// -----------------------------
-// CONFIGURATION
-// -----------------------------
-const NUM_SETTLEMENTS = 5;
-const MAX_TRANSITIONS = 5;
-const FAILURE_INJECTION_PROB = 0.1;
+// ── Configuration ─────────────────────────────────────────────────────────────
 
-// -----------------------------
-// HELPER FUNCTIONS
-// -----------------------------
-function randomBoolean(prob: number): boolean {
-    return Math.random() < prob;
+const CONFIG = {
+  numSettlements:       5,
+  maxTransitionRounds:  5,
+  failureInjectionProb: 0.1,
+} as const;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function shouldInjectFailure(probability: number): boolean {
+  return Math.random() < probability;
 }
 
-// -----------------------------
-// MAIN SANDBOX FUNCTION
-// -----------------------------
-async function runDay1Sandbox() {
-    const ledger = new Ledger();
-    const stateMachine = new StateMachine();
-    const replayEngine = new ReplayEngine(ledger);
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
 
-    console.log("=== Day 1 Sandbox: Starting ===");
+// ── Sandbox ───────────────────────────────────────────────────────────────────
 
-    // Step 1: truncate tables for rerunnable sandbox
-    await ledger.withTransaction(async (client) => {
-        await client.query("TRUNCATE ledger_entries, settlements RESTART IDENTITY CASCADE");
-        console.log("[DB] Truncated settlements and ledger_entries");
-    });
+async function runDay1Sandbox(): Promise<void> {
+  const ledger        = new InMemoryLedger();   // zero network — runs anywhere
+  const stateMachine  = new StateMachine();
+  const replayEngine  = new ReplayEngine(ledger);
 
-    // Step 2: create settlements
-    const settlements: Settlement[] = [];
-    for (let i = 0; i < NUM_SETTLEMENTS; i++) {
-        const ref = `SETTLEMENT-${i + 1}`;
-        const owner = `owner-${i + 1}`;
-        settlements.push(new Settlement(ref, owner, ledger));
-    }
+  console.log("=== SettlrOS Day 1 Sandbox: Starting ===\n");
 
-    console.log(`[INFO] Created ${NUM_SETTLEMENTS} settlement instances`);
+  // Step 1 — Instantiate settlements
+  const settlements: Settlement[] = Array.from(
+    { length: CONFIG.numSettlements },
+    (_, i) => new Settlement(`SETTLEMENT-${i + 1}`, `owner-${i + 1}`, ledger)
+  );
 
-    // Step 3: start all settlements concurrently
-    await Promise.all(settlements.map(async (s) => {
+  console.log(`[INIT] ${CONFIG.numSettlements} settlement instances created`);
+
+  // Step 2 — Start all settlements concurrently
+  await Promise.all(
+    settlements.map(async (s) => {
+      try {
+        await s.start();
+        console.log(`[START]      ${s.getReference()} → ${s.getState()}`);
+      } catch (err) {
+        console.error(`[ERROR] start(${s.getReference()}):`, (err as Error).message);
+      }
+    })
+  );
+
+  // Step 3 — Simulate concurrent transition rounds
+  for (let round = 1; round <= CONFIG.maxTransitionRounds; round++) {
+    console.log(`\n[ROUND ${round}]`);
+
+    await Promise.all(
+      settlements.map(async (s) => {
+        const current: SettlementState  = s.getState();
+        const options: SettlementState[] = stateMachine.getNextStates(current);
+
+        if (options.length === 0) {
+          console.log(`[TERMINAL]   ${s.getReference()} is in terminal state: ${current}`);
+          return;
+        }
+
+        const next = pickRandom(options);
+
+        if (shouldInjectFailure(CONFIG.failureInjectionProb)) {
+          console.log(`[INJECTED]   ${s.getReference()} failure injected — skipping ${current} → ${next}`);
+          return;
+        }
+
         try {
-            await s.start();
-            console.log(`[START] ${s["reference"]} initiated`);
-        } catch (err: unknown) {
-            console.error(`[ERROR] Starting ${s["reference"]}:`, (err as Error).message);
+          await s.transitionTo(current, next, s.getOwner());
+          console.log(`[TRANSITION] ${s.getReference()}: ${current} → ${next}`);
+        } catch (err) {
+          console.error(`[ERROR] transition(${s.getReference()}):`, (err as Error).message);
         }
-    }));
+      })
+    );
+  }
 
-    // Step 4: simulate transitions
-    for (let t = 0; t < MAX_TRANSITIONS; t++) {
-        await Promise.all(settlements.map(async (s) => {
-            const currentState: SettlementState = s.getState();
-            const possibleNext: SettlementState[] = stateMachine.getNextStates(currentState);
-            if (possibleNext.length === 0) return;
+  // Step 4 — Replay each settlement from ledger events
+  console.log("\n[REPLAY PHASE]");
 
-            const nextState: SettlementState = possibleNext[Math.floor(Math.random() * possibleNext.length)];
+  for (const s of settlements) {
+    try {
+      const replayed = await replayEngine.replaySettlement(s.getReference());
+      const inMemory = s.getState();
+      const match    = replayed === inMemory ? "✓" : "✗ MISMATCH";
 
-            // simulate failure injection
-            if (randomBoolean(FAILURE_INJECTION_PROB)) {
-                console.log(`[FAIL] Simulating failure for ${s["reference"]} ${currentState} → ${nextState}`);
-                return;
-            }
-
-            try {
-                await s.transitionTo(currentState, nextState, s["owner"]);
-                console.log(`[TRANSITION] ${s["reference"]}: ${currentState} → ${nextState}`);
-            } catch (err: unknown) {
-                console.error(`[ERROR] Transition ${s["reference"]}:`, (err as Error).message);
-            }
-        }));
+      console.log(
+        `[REPLAY] ${s.getReference()} — in-memory: ${inMemory} | replayed: ${replayed} ${match}`
+      );
+    } catch (err) {
+      console.error(`[ERROR] replay(${s.getReference()}):`, (err as Error).message);
     }
+  }
 
-    // Step 5: replay settlements deterministically
-    await ledger.withTransaction(async (client) => {
-        for (const s of settlements) {
-            try {
-                const finalState = await replayEngine.replaySettlement(s["reference"], client);
-                console.log(`[REPLAY] ${s["reference"]} final state: ${finalState}`);
-            } catch (err: unknown) {
-                console.error(`[ERROR] Replay ${s["reference"]}:`, (err as Error).message);
-            }
-        }
-    });
-
-    await ledger.close();
-    console.log("=== Day 1 Sandbox: Completed ===");
+  console.log("\n=== SettlrOS Day 1 Sandbox: Completed ===");
 }
 
-// -----------------------------
-// Execute
-// -----------------------------
+// ── Execute ───────────────────────────────────────────────────────────────────
+
 runDay1Sandbox()
-    .then(() => console.log("[SUCCESS] Day 1 sandbox finished"))
-    .catch((err) => {
-        console.error("[FATAL] Sandbox failed:", err);
-        process.exit(1);
-    });
+  .then(() => {
+    console.log("[SUCCESS] Day 1 sandbox finished.");
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error("[FATAL] Sandbox failed:", err);
+    process.exit(1);
+  });

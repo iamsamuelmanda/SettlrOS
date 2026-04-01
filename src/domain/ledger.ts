@@ -1,62 +1,99 @@
-import { Pool, PoolClient } from "pg";
+import { Pool } from "pg";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-export class Ledger {
-    private pool: Pool;
+// ── Shared types ──────────────────────────────────────────────────────────────
 
-    constructor() {
-        this.pool = new Pool({
-            connectionString: process.env.DATABASE_URL,
-        });
-    }
+export interface LedgerEntry {
+  settlementReference: string;
+  state: string;
+  sequenceNumber: number;
+  occurredAt?: Date;
+}
 
-    async withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-        const client = await this.pool.connect();
-        try {
-            await client.query("BEGIN");
-            const result = await fn(client);
-            await client.query("COMMIT");
-            return result;
-        } catch (err) {
-            await client.query("ROLLBACK");
-            throw err;
-        } finally {
-            client.release();
-        }
-    }
+// ── Interface — domain depends only on this, never on Postgres ────────────────
 
-    async append(
-        client: PoolClient,
-        settlementReference: string,
-        state: string,
-        sequenceNumber: number
-    ): Promise<void> {
-        await client.query(
-            `
-            INSERT INTO ledger_entries
-                (settlement_reference, state, sequence_number)
-            VALUES
-                ($1, $2, $3)
-            ON CONFLICT (settlement_reference, sequence_number) DO NOTHING
-            `,
-            [settlementReference, state, sequenceNumber]
-        );
-    }
+export interface ILedger {
+  append(entry: LedgerEntry): Promise<void>;
+  fetchEvents(settlementReference: string): Promise<LedgerEntry[]>;
+}
 
-    async fetchEvents(client: PoolClient, settlementReference: string) {
-        const res = await client.query(
-            `SELECT state, sequence_number, occurred_at
-             FROM ledger_entries
-             WHERE settlement_reference = $1
-             ORDER BY sequence_number ASC`,
-            [settlementReference]
-        );
-        return res.rows;
-    }
+// ── In-memory implementation — tests only, zero network ──────────────────────
 
-    async close(): Promise<void> {
-        await this.pool.end();
+export class InMemoryLedger implements ILedger {
+  private readonly entries: LedgerEntry[] = [];
+
+  async append(entry: LedgerEntry): Promise<void> {
+    const duplicate = this.entries.some(
+      (e) =>
+        e.settlementReference === entry.settlementReference &&
+        e.sequenceNumber === entry.sequenceNumber
+    );
+    if (!duplicate) {
+      this.entries.push({ ...entry, occurredAt: new Date() });
     }
+  }
+
+  async fetchEvents(settlementReference: string): Promise<LedgerEntry[]> {
+    return this.entries
+      .filter((e) => e.settlementReference === settlementReference)
+      .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+  }
+}
+
+// ── Postgres implementation — production only ─────────────────────────────────
+
+export class PostgresLedger implements ILedger {
+  private readonly pool: Pool;
+
+  constructor(connectionString?: string) {
+    this.pool = new Pool({
+      connectionString: connectionString ?? process.env.DATABASE_URL,
+    });
+  }
+
+  async append(entry: LedgerEntry): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO ledger_entries (settlement_reference, state, sequence_number)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (settlement_reference, sequence_number) DO NOTHING`,
+        [entry.settlementReference, entry.state, entry.sequenceNumber]
+      );
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async fetchEvents(settlementReference: string): Promise<LedgerEntry[]> {
+    const client = await this.pool.connect();
+    try {
+      const res = await client.query(
+        `SELECT state, sequence_number, occurred_at
+         FROM ledger_entries
+         WHERE settlement_reference = $1
+         ORDER BY sequence_number ASC`,
+        [settlementReference]
+      );
+      return res.rows.map((r) => ({
+        settlementReference,
+        state: r.state,
+        sequenceNumber: r.sequence_number,
+        occurredAt: r.occurred_at,
+      }));
+    } finally {
+      client.release();
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.pool.end();
+  }
 }
