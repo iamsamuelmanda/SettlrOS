@@ -9,6 +9,7 @@ export interface LedgerEntry {
   settlementReference: string;
   state: string;
   sequenceNumber: number;
+  idempotencyKey?: string;
   occurredAt?: Date;
 }
 
@@ -17,12 +18,14 @@ export interface LedgerEntry {
 export interface ILedger {
   append(entry: LedgerEntry): Promise<void>;
   fetchEvents(settlementReference: string): Promise<LedgerEntry[]>;
+  hasIdempotencyKey(key: string): Promise<boolean>;
 }
 
 // ── In-memory implementation — tests only, zero network ──────────────────────
 
 export class InMemoryLedger implements ILedger {
-  private readonly entries: LedgerEntry[] = [];
+  private readonly entries: LedgerEntry[]         = [];
+  private readonly seenKeys: Set<string>           = new Set();
 
   async append(entry: LedgerEntry): Promise<void> {
     const duplicate = this.entries.some(
@@ -32,6 +35,9 @@ export class InMemoryLedger implements ILedger {
     );
     if (!duplicate) {
       this.entries.push({ ...entry, occurredAt: new Date() });
+      if (entry.idempotencyKey) {
+        this.seenKeys.add(entry.idempotencyKey);
+      }
     }
   }
 
@@ -39,6 +45,10 @@ export class InMemoryLedger implements ILedger {
     return this.entries
       .filter((e) => e.settlementReference === settlementReference)
       .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+  }
+
+  async hasIdempotencyKey(key: string): Promise<boolean> {
+    return this.seenKeys.has(key);
   }
 }
 
@@ -58,10 +68,10 @@ export class PostgresLedger implements ILedger {
     try {
       await client.query("BEGIN");
       await client.query(
-        `INSERT INTO ledger_entries (settlement_reference, state, sequence_number)
-         VALUES ($1, $2, $3)
+        `INSERT INTO ledger_entries (settlement_reference, state, sequence_number, idempotency_key)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (settlement_reference, sequence_number) DO NOTHING`,
-        [entry.settlementReference, entry.state, entry.sequenceNumber]
+        [entry.settlementReference, entry.state, entry.sequenceNumber, entry.idempotencyKey ?? null]
       );
       await client.query("COMMIT");
     } catch (err) {
@@ -88,6 +98,19 @@ export class PostgresLedger implements ILedger {
         sequenceNumber: r.sequence_number,
         occurredAt: r.occurred_at,
       }));
+    } finally {
+      client.release();
+    }
+  }
+
+  async hasIdempotencyKey(key: string): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      const res = await client.query(
+        `SELECT 1 FROM ledger_entries WHERE idempotency_key = $1 LIMIT 1`,
+        [key]
+      );
+      return (res.rowCount ?? 0) > 0;
     } finally {
       client.release();
     }

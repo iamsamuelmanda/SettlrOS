@@ -72,8 +72,9 @@ async function runDay1Sandbox(): Promise<void> {
         }
 
         try {
-          await s.transitionTo(current, next, s.getOwner());
-          console.log(`[TRANSITION] ${s.getReference()}: ${current} → ${next}`);
+          const key = `${s.getReference()}-r${round}-${Math.random().toString(36).slice(2)}`;
+          const result = await s.transitionTo(current, next, s.getOwner(), key);
+          console.log(`[TRANSITION] ${s.getReference()}: ${current} → ${next} (${result.status})`);
         } catch (err) {
           console.error(`[ERROR] transition(${s.getReference()}):`, (err as Error).message);
         }
