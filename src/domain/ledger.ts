@@ -10,6 +10,7 @@ export interface LedgerEntry {
   state: string;
   sequenceNumber: number;
   idempotencyKey?: string;
+  metadata?: Record<string, string>;
   occurredAt?: Date;
 }
 

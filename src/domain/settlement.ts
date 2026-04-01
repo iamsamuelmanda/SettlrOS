@@ -65,7 +65,8 @@ export class Settlement {
     expectedState:  SettlementState,
     nextState:      SettlementState,
     nextOwner:      string,
-    idempotencyKey: string
+    idempotencyKey: string,
+    metadata?:      Record<string, string>
   ): Promise<TransitionOutcome> {
 
     // Idempotency check — same key seen before, return without re-processing
@@ -97,6 +98,7 @@ export class Settlement {
       state:               nextState,
       sequenceNumber:      this.version,
       idempotencyKey,
+      metadata,
     };
 
     try {
