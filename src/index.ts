@@ -21,6 +21,7 @@ async function main() {
 }
 
 main().catch(err => {
-    console.error("Fatal error initializing Connexa-core:", err);
+    console.error("Fatal error initializing settlr-os:", err);
     process.exit(1);
 });
+
