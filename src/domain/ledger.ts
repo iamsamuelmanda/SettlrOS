@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Pool, QueryResultRow } from "pg";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -25,8 +25,8 @@ export interface ILedger {
 // ── In-memory implementation — tests only, zero network ──────────────────────
 
 export class InMemoryLedger implements ILedger {
-  private readonly entries: LedgerEntry[]         = [];
-  private readonly seenKeys: Set<string>           = new Set();
+  private readonly entries: LedgerEntry[] = [];
+  private readonly seenKeys: Set<string> = new Set();
 
   async append(entry: LedgerEntry): Promise<void> {
     const duplicate = this.entries.some(
@@ -72,7 +72,12 @@ export class PostgresLedger implements ILedger {
         `INSERT INTO ledger_entries (settlement_reference, state, sequence_number, idempotency_key)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (settlement_reference, sequence_number) DO NOTHING`,
-        [entry.settlementReference, entry.state, entry.sequenceNumber, entry.idempotencyKey ?? null]
+        [
+          entry.settlementReference,
+          entry.state,
+          entry.sequenceNumber,
+          entry.idempotencyKey ?? null,
+        ]
       );
       await client.query("COMMIT");
     } catch (err) {
@@ -93,11 +98,11 @@ export class PostgresLedger implements ILedger {
          ORDER BY sequence_number ASC`,
         [settlementReference]
       );
-      return res.rows.map((r) => ({
+      return res.rows.map((r: QueryResultRow) => ({
         settlementReference,
-        state: r.state,
-        sequenceNumber: r.sequence_number,
-        occurredAt: r.occurred_at,
+        state: r.state as string,
+        sequenceNumber: (r as any).sequence_number as number,
+        occurredAt: (r as any).occurred_at as Date,
       }));
     } finally {
       client.release();
