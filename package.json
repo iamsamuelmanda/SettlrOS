@@ -1,16 +1,19 @@
 {
   "name": "settlr-os",
   "version": "0.1.0",
+  "description": "Settlement infrastructure for mobile money corridors in Africa",
   "main": "dist/index.js",
   "scripts": {
     "start": "ts-node src/index.ts",
+    "start:prod": "node dist/index.js",
     "build": "tsc",
     "lint": "eslint 'src/**/*.ts'",
     "test": "jest",
     "test-day1": "ts-node tests/testDay1Final.ts",
     "test-day2": "ts-node tests/testDay2.ts",
     "test-day3": "ts-node tests/testDay3.ts",
-    "test-day4": "ts-node tests/testDay4.ts"
+    "test-day4": "ts-node tests/testDay4.ts",
+    "test-day5": "ts-node tests/testDay5.ts"
   },
   "dependencies": {
     "@fastify/sensible": "^6.0.4",

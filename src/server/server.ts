@@ -3,8 +3,15 @@ import sensible from "@fastify/sensible";
 import { TenantStore } from "./tenantStore";
 import { settlementRoutes } from "./routes/settlements";
 
-export function buildServer(): FastifyInstance {
-  const app   = Fastify({ logger: false });
+interface ServerOptions {
+  logger?: boolean;
+}
+
+export function buildServer(opts: ServerOptions = {}): FastifyInstance {
+  const isProd = process.env.NODE_ENV === "production";
+  const logger = opts.logger ?? isProd;
+
+  const app   = Fastify({ logger });
   const store = new TenantStore();
 
   app.register(sensible);
