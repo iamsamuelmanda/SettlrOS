@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { TenantStore } from "../tenantStore";
+import { TenantStore, isValidState } from "../tenantStore";
 import { extractApiKey, resolveTenant } from "../auth";
 import { randomUUID } from "crypto";
 
@@ -26,6 +26,36 @@ export async function settlementRoutes(
   app:   FastifyInstance,
   store: TenantStore
 ): Promise<void> {
+
+  // GET /settlements — list all settlements, with optional ?state= filter
+  app.get<{
+    Querystring: { state?: string };
+  }>("/settlements", async (req, reply) => {
+    const tenantId = authenticate(app, store, req.headers);
+    const { state } = req.query;
+
+    if (state !== undefined && !isValidState(state)) {
+      return reply.status(422).send({
+        error: `Invalid state: ${state}. Must be one of INITIATED, PENDING, COMPLETED, FAILED`,
+      });
+    }
+
+    const records = store.listSettlements(tenantId, state as any);
+
+    const settlements = records.map((r) => ({
+      reference: r.settlement.getReference(),
+      state:     r.settlement.getState(),
+      version:   r.settlement.getVersion(),
+      createdAt: r.createdAt.toISOString(),
+    }));
+
+    return reply.status(200).send({
+      tenantId,
+      generatedAt:  new Date().toISOString(),
+      total:        settlements.length,
+      settlements,
+    });
+  });
 
   // POST /settlements — create a new settlement
   app.post<{
